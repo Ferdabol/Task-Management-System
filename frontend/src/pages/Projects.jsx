@@ -1,9 +1,21 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  collection,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  serverTimestamp,
+} from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 export default function Projects() {
   const [projects, setProjects] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -12,52 +24,95 @@ export default function Projects() {
     endDate: ''
   });
 
+  const projectsRef = collection(db, 'projects');
+
+  // FETCH PROJECTS
   useEffect(() => {
-    loadProjects();
+    const fetchProjects = async () => {
+      try {
+        const snapshot = await getDocs(projectsRef);
+        setProjects(
+          snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+        );
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load projects');
+      }
+    };
+
+    fetchProjects();
   }, []);
 
-  const loadProjects = () => {
-    const stored = JSON.parse(localStorage.getItem('projects') || '[]');
-    setProjects(stored);
-  };
-
-  const saveProjects = (updatedProjects) => {
-    localStorage.setItem('projects', JSON.stringify(updatedProjects));
-    setProjects(updatedProjects);
-  };
-
-  const handleSubmit = (e) => {
+  // CREATE + UPDATE (FIRESTORE)
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (editingProject) {
-      const updated = projects.map(p => 
-        p.id === editingProject.id ? { ...formData, id: p.id } : p
-      );
-      saveProjects(updated);
-    } else {
-      const newProject = {
-        ...formData,
-        id: Date.now().toString(),
-        createdAt: new Date().toISOString()
-      };
-      saveProjects([...projects, newProject]);
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      if (editingProject) {
+        await updateDoc(doc(db, 'projects', editingProject.id), {
+          ...formData,
+          updatedAt: serverTimestamp(),
+        });
+
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === editingProject.id ? { ...p, ...formData } : p
+          )
+        );
+      } else {
+        const docRef = await addDoc(projectsRef, {
+          ...formData,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        setProjects((prev) => [
+          ...prev,
+          { id: docRef.id, ...formData },
+        ]);
+      }
+
+      closeModal();
+    } catch (err) {
+      console.error(err);
+      setError('Failed to save project');
+    } finally {
+      setSubmitting(false);
     }
-    
-    closeModal();
   };
 
+  // EDIT
   const handleEdit = (project) => {
     setEditingProject(project);
-    setFormData(project);
+    setFormData({
+      name: project.name,
+      description: project.description,
+      status: project.status,
+      startDate: project.startDate,
+      endDate: project.endDate
+    });
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id) => {
-    if (confirm('Are you sure you want to delete this project?')) {
-      saveProjects(projects.filter(p => p.id !== id));
+  // DELETE (FIRESTORE)
+  const handleDelete = async (id) => {
+    if (!confirm('Are you sure you want to delete this project?')) return;
+
+    try {
+      await deleteDoc(doc(db, 'projects', id));
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+    } catch (err) {
+      console.error(err);
+      setError('Failed to delete project');
     }
   };
 
+  // CLOSE MODAL
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProject(null);
@@ -68,6 +123,7 @@ export default function Projects() {
       startDate: '',
       endDate: ''
     });
+    setError(null);
   };
 
   return (
@@ -85,6 +141,14 @@ export default function Projects() {
         </button>
       </div>
 
+      {/* Error Message */}
+      {error && (
+        <div className="p-4 mb-6 bg-red-50 border border-red-200 rounded-lg">
+          <p className="text-red-800">{error}</p>
+        </div>
+      )}
+
+      {/* Empty State */}
       {projects.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-lg shadow">
           <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -209,14 +273,16 @@ export default function Projects() {
                 <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
                   <button
                     type="submit"
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm"
+                    disabled={submitting}
+                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {editingProject ? 'Update' : 'Create'}
+                    {submitting ? 'Saving...' : editingProject ? 'Update' : 'Create'}
                   </button>
                   <button
                     type="button"
                     onClick={closeModal}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+                    disabled={submitting}
+                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Cancel
                   </button>

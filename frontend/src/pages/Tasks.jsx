@@ -1,4 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  collection,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  serverTimestamp,
+} from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 export default function Tasks() {
   const [tasks, setTasks] = useState([]);
@@ -6,6 +16,9 @@ export default function Tasks() {
   const [users, setUsers] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -16,56 +29,132 @@ export default function Tasks() {
     deadline: ''
   });
 
+  const tasksRef = collection(db, 'tasks');
+  const projectsRef = collection(db, 'projects');
+  const usersRef = collection(db, 'taskManagement'); // Same collection as Users.jsx
+
+  // FETCH TASKS, PROJECTS, AND USERS
   useEffect(() => {
-    loadData();
+    const fetchData = async () => {
+      try {
+        const tasksSnapshot = await getDocs(tasksRef);
+        const projectsSnapshot = await getDocs(projectsRef);
+        const usersSnapshot = await getDocs(usersRef);
+
+        setTasks(
+          tasksSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+        );
+
+        setProjects(
+          projectsSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+        );
+
+        setUsers(
+          usersSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+        );
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load tasks');
+      }
+    };
+
+    fetchData();
   }, []);
 
-  const loadData = () => {
-    const storedTasks = JSON.parse(localStorage.getItem('tasks') || '[]');
-    const storedProjects = JSON.parse(localStorage.getItem('projects') || '[]');
-    const storedUsers = JSON.parse(localStorage.getItem('users') || '[]');
-    setTasks(storedTasks);
-    setProjects(storedProjects);
-    setUsers(storedUsers);
+  // HELPER FUNCTIONS
+  const getProjectName = (projectId) => {
+    const project = projects.find((p) => p.id === projectId);
+    return project ? project.name : 'N/A';
   };
 
-  const saveTasks = (updatedTasks) => {
-    localStorage.setItem('tasks', JSON.stringify(updatedTasks));
-    setTasks(updatedTasks);
+  const getUserName = (userId) => {
+    const user = users.find((u) => u.id === userId);
+    return user ? user.name : 'Unassigned';
   };
 
-  const handleSubmit = (e) => {
+  const isOverdue = (task) => {
+    if (task.status === 'completed') return false;
+    return new Date(task.deadline) < new Date();
+  };
+
+  // CREATE + UPDATE (FIRESTORE)
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (editingTask) {
-      const updated = tasks.map(t => 
-        t.id === editingTask.id ? { ...formData, id: t.id } : t
-      );
-      saveTasks(updated);
-    } else {
-      const newTask = {
-        ...formData,
-        id: Date.now().toString(),
-        createdAt: new Date().toISOString()
-      };
-      saveTasks([...tasks, newTask]);
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      if (editingTask) {
+        await updateDoc(doc(db, 'tasks', editingTask.id), {
+          ...formData,
+          updatedAt: serverTimestamp(),
+        });
+
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === editingTask.id ? { ...t, ...formData } : t
+          )
+        );
+      } else {
+        const docRef = await addDoc(tasksRef, {
+          ...formData,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        setTasks((prev) => [
+          ...prev,
+          { id: docRef.id, ...formData },
+        ]);
+      }
+
+      closeModal();
+    } catch (err) {
+      console.error(err);
+      setError('Failed to save task');
+    } finally {
+      setSubmitting(false);
     }
-    
-    closeModal();
   };
 
+  // EDIT
   const handleEdit = (task) => {
     setEditingTask(task);
-    setFormData(task);
+    setFormData({
+      title: task.title,
+      description: task.description,
+      projectId: task.projectId,
+      assignedTo: task.assignedTo || '',
+      status: task.status,
+      priority: task.priority,
+      deadline: task.deadline
+    });
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id) => {
-    if (confirm('Are you sure you want to delete this task?')) {
-      saveTasks(tasks.filter(t => t.id !== id));
+  // DELETE (FIRESTORE)
+  const handleDelete = async (id) => {
+    if (!confirm('Are you sure you want to delete this task?')) return;
+
+    try {
+      await deleteDoc(doc(db, 'tasks', id));
+      setTasks((prev) => prev.filter((t) => t.id !== id));
+    } catch (err) {
+      console.error(err);
+      setError('Failed to delete task');
     }
   };
 
+  // CLOSE MODAL
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingTask(null);
@@ -78,21 +167,7 @@ export default function Tasks() {
       priority: 'medium',
       deadline: ''
     });
-  };
-
-  const getProjectName = (projectId) => {
-    const project = projects.find(p => p.id === projectId);
-    return project ? project.name : 'N/A';
-  };
-
-  const getUserName = (userId) => {
-    const user = users.find(u => u.id === userId);
-    return user ? user.name : 'Unassigned';
-  };
-
-  const isOverdue = (task) => {
-    if (task.status === 'completed') return false;
-    return new Date(task.deadline) < new Date();
+    setError(null);
   };
 
   return (
@@ -110,6 +185,14 @@ export default function Tasks() {
         </button>
       </div>
 
+      {/* Error Message */}
+      {error && (
+        <div className="p-4 mb-6 bg-red-50 border border-red-200 rounded-lg">
+          <p className="text-red-800">{error}</p>
+        </div>
+      )}
+
+      {/* Empty State */}
       {tasks.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-lg shadow">
           <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -300,14 +383,16 @@ export default function Tasks() {
                 <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
                   <button
                     type="submit"
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm"
+                    disabled={submitting}
+                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {editingTask ? 'Update' : 'Create'}
+                    {submitting ? 'Saving...' : editingTask ? 'Update' : 'Create'}
                   </button>
                   <button
                     type="button"
                     onClick={closeModal}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+                    disabled={submitting}
+                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Cancel
                   </button>
@@ -320,3 +405,4 @@ export default function Tasks() {
     </div>
   );
 }
+
